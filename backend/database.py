@@ -90,10 +90,11 @@ def count_events() -> int:
 def create_alert(*, source_ip: str, severity: str, title: str, reason: str,
                  event_id: int | None, simulated: bool = False) -> dict[str, Any] | None:
     with connect() as conn:
-        # Avoid flooding the dashboard with identical alerts for the same source.
+        # SQLite's datetime() uses a space separator; stored timestamps use ISO's T.
+        cutoff = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - 60, timezone.utc).isoformat(timespec="seconds")
         existing = conn.execute(
-            "SELECT * FROM alerts WHERE source_ip=? AND title=? AND timestamp >= datetime('now','-60 seconds') ORDER BY id DESC LIMIT 1",
-            (source_ip, title)).fetchone()
+            "SELECT * FROM alerts WHERE source_ip=? AND title=? AND timestamp >= ? ORDER BY id DESC LIMIT 1",
+            (source_ip, title, cutoff)).fetchone()
         if existing:
             return None
         cur = conn.execute(
