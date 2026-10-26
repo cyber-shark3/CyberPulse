@@ -5,16 +5,14 @@ Do not expose directly to the public internet.
 """
 from __future__ import annotations
 
-import secrets
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from backend import database
-from backend.detection import analyse_event
+from backend.detection import SENSITIVE_PATHS, analyse_event
 
 app = FastAPI(title="CyberPulse", version="0.1.0", description="Local educational honeypot monitoring prototype")
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
@@ -92,12 +90,21 @@ def decoy_admin(request: Request) -> JSONResponse:
 
 @app.get("/decoy/.env")
 def decoy_env(request: Request) -> JSONResponse:
-    event = database.add_event(source_ip=client_ip(request), service="HTTP decoy",
-        event_type="sensitive_path_probe", path="/decoy/.env", severity="MEDIUM",
-        summary="Request for a sensitive-looking decoy path", simulated=False,
-        details={"secret_data_returned": False})
-    analyse_event(event)
+    event = record(request, event_type="sensitive_path_probe", path="/decoy/.env", severity="MEDIUM",
+        summary="Request for a sensitive-looking decoy path", details={"secret_data_returned": False})
     return JSONResponse({"message": "Decoy endpoint. No file or secrets are served.", "event_id": event["id"]}, status_code=404)
+
+
+@app.api_route("/decoy/{requested_path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+def decoy_unknown(request: Request, requested_path: str) -> JSONResponse:
+    """Capture probes against other decoy paths without serving real files."""
+    path = "/decoy/" + requested_path[:180]
+    sensitive = path in SENSITIVE_PATHS
+    event = record(request, event_type="sensitive_path_probe" if sensitive else "decoy_request",
+        path=path, severity="MEDIUM" if sensitive else "LOW",
+        summary="Request for a sensitive-looking decoy path" if sensitive else "Request observed on an unknown decoy path",
+        details={"method": request.method, "secret_data_returned": False})
+    return JSONResponse({"message": "Decoy endpoint. No application data is served.", "event_id": event["id"]}, status_code=404)
 
 
 @app.post("/api/demo/run")
@@ -121,9 +128,8 @@ def run_demo() -> dict[str, Any]:
 
 
 @app.post("/api/alerts/{alert_id}/resolve")
-def resolve_alert(alert_id: int) -> dict[str, Any]:
-    from backend.database import connect
-    with connect() as conn:
+def resolve_alert(alert_id: int) -> dict[str, Any] | JSONResponse:
+    with database.connect() as conn:
         cursor = conn.execute("UPDATE alerts SET status='RESOLVED' WHERE id=?", (alert_id,))
         if cursor.rowcount == 0:
             return JSONResponse(status_code=404, content={"detail": "Alert not found"})
